@@ -389,6 +389,39 @@ def deobfuscate_jni_strings(so_name: str, apk_path: str = "") -> dict[str, Any]:
     return extract_jni_onload_strings(so_name=so_name, apk_path=apk_path)
 
 
+def export_llm_tool_schemas(provider_format: str = "openai") -> list[dict[str, Any]]:
+    """Exports JNISleuth tools in OpenAI/Ollama function-calling, Google Gemini, or MCP schema format."""
+    if hasattr(mcp, "list_tools_metadata"):
+        raw_tools = mcp.list_tools_metadata()
+    else:
+        raw_tools = []
+
+    fmt = provider_format.lower().strip()
+    if fmt == "mcp":
+        return raw_tools
+    if fmt == "gemini":
+        return [
+            {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["inputSchema"],
+            }
+            for t in raw_tools
+        ]
+    # Default: OpenAI / Ollama / vLLM / LiteLLM `tools` format
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["inputSchema"],
+            },
+        }
+        for t in raw_tools
+    ]
+
+
 def main() -> None:
     mcp.run()
 

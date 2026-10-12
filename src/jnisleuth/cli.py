@@ -11,6 +11,7 @@ from typing import Sequence
 from .ghidra_bridge import sync_ghidra_jni_types
 from .ida_bridge import sync_ida_jni_types
 from .mcp_server import (
+    export_llm_tool_schemas,
     extract_jni_onload_strings,
     get_cross_boundary_slice,
     mcp,
@@ -270,6 +271,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_ida.add_argument("--database", default="banker_dropper.i64", help="Target IDA .i64 database name")
     p_ida.add_argument("--output-header", default="", help="Optional path to write jni_types.h")
 
+    p_llm = sub.add_parser(
+        "llm-tools",
+        help="Export tool schemas for any LLM SDK (OpenAI, Gemini, Ollama/vLLM, or MCP)",
+    )
+    p_llm.add_argument(
+        "--format",
+        choices=("openai", "gemini", "mcp"),
+        default="openai",
+        help="Target LLM tool schema format (default: openai)",
+    )
+
     sub.add_parser("generate-samples", help="Generate synthetic APK, ELF .so, and Dobby trace samples")
     sub.add_parser("mcp", help="Start the JNISleuth FastMCP stdio server")
 
@@ -292,6 +304,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_deobfuscate(args)
     if args.command == "ida-sync":
         return cmd_ida_sync(args)
+    if args.command == "llm-tools":
+        print(json.dumps(export_llm_tool_schemas(args.format), indent=2))
+        return 0
     if args.command == "generate-samples":
         paths = generate_all_samples()
         print(json.dumps(paths, indent=2))

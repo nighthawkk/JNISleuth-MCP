@@ -3,7 +3,7 @@
 # 🕵️‍♂️ JNISleuth-MCP
 
 **Bridge the Java-to-Native Chasm in Android Reverse Engineering.**  
-*Automated `RegisterNatives` Recovery, Stripped ARM64 `.so` Type Reconstruction, and a Unified Jadx + Ghidra MCP Server for AI-Assisted Malware Analysis.*
+*Automated `RegisterNatives` Recovery, Stripped ARM64 `.so` Type Reconstruction, and a Unified Jadx + Ghidra or IDA MCP Server for AI-Assisted Malware Analysis.*
 
 [![Platform](https://img.shields.io/badge/Platform-Android%20ARM64%20%7C%20ARMv7%20%7C%20x86__64-3DDC84?logo=android&logoColor=white)](#)
 [![Ghidra](https://img.shields.io/badge/Ghidra-11.x%2B-red)](#)
@@ -130,14 +130,17 @@ jbyteArray Java_com_dropper_Core_decryptPayload(
 
 ---
 
-## 🤖 MCP Tools for AI Agents
+## 🤖 Universal LLM & MCP Support (Works With Any Model)
 
-Connect `JNISleuth-MCP` to **Claude Desktop**, **Cursor**, **Gemini CLI**, or **Cline** to give your LLM full visibility across the Java/Native boundary:
+`JNISleuth-MCP` is **100% model-agnostic**. You can connect it to **any cloud or local LLM** via the standard Model Context Protocol (`stdio` JSON-RPC 2.0) or export native **OpenAI / Gemini / Ollama function-calling schemas**:
+* **Cloud LLMs & Agents:** Google **Gemini CLI**, **OpenAI / ChatGPT Desktop / Codex CLI**, **Cursor**, **Windsurf**, **Cline**, **Roo Code**, **Claude Desktop / Claude Code**
+* **Local / Self-Hosted LLMs:** **Ollama**, **vLLM**, **LM Studio**, **OpenWebUI**, **Continue.dev** (DeepSeek-R1, Qwen-2.5-Coder, Llama-3.3)
+* **Custom Python Agent SDKs:** Direct tool-schema export (`jnisleuth llm-tools --format openai|gemini|mcp`) for LangChain, LlamaIndex, LiteLLM, OpenAI SDK, or `google-genai`.
 
-| MCP Tool Name | Description |
+| Tool Name | Description |
 | :--- | :--- |
 | `resolve_apk_jni_map(apk_path)` | Extracts all `native` declarations from DEX and maps them to exact ELF file offsets in `lib/*.so` (via export symbols, static `.rodata` triplets, or dynamic trace import). |
-| `get_cross_boundary_slice(java_method)` | Returns the decompiled Java caller (via Jadx) **and** the typed, decompiled C/ARM64 implementation (via Ghidra) in a single unified response. |
+| `get_cross_boundary_slice(java_method)` | Returns the decompiled Java caller (via Jadx) **and** the typed, decompiled C/ARM64 implementation (via Ghidra/IDA) in a single unified response. |
 | `trace_jni_upcalls(so_name, fn_offset)` | Lists every Java reflection callback (`FindClass`, `GetMethodID`, `CallObjectMethod`, `SetByteArrayRegion`) invoked inside a native ARM64 function and its callees. |
 | `sync_ghidra_jni_types(trace_json)` | Applies `JNIEnv*`, `JavaVM*`, `JNINativeMethod` structs, and recovered function signatures directly into an active or headless Ghidra project. |
 | `sync_ida_jni_types(trace_json)` | Applies `JNIEnv*`, `JavaVM*`, `JNINativeMethod` C headers, recovered function prototypes, and OLLVM `fl_JN` code cross-references into IDA Pro 9.0 (`idalib` / `idapyswitch` / `idat64`). |
@@ -177,7 +180,8 @@ uv run jnisleuth scan --apk examples/obfuscated_jni_sample.apk --ghidra-headless
 uv run jnisleuth deobfuscate --so examples/libcore-crypto.so --offset 0x5200 --patch-out examples/libcore-crypto.deobf.so
 ```
 
-### Add to Claude Desktop / Cursor (`mcp.json`)
+### Connect to Any LLM / IDE Agent (`mcp.json` / `settings.json`)
+Works out of the box with **Gemini CLI (`~/.gemini/settings.json`)**, **Cursor (`.cursor/mcp.json`)**, **Windsurf**, **Cline**, **Continue.dev (Ollama)**, **ChatGPT Desktop**, and **Claude**:
 ```json
 {
   "mcpServers": {
@@ -185,11 +189,19 @@ uv run jnisleuth deobfuscate --so examples/libcore-crypto.so --offset 0x5200 --p
       "command": "uv",
       "args": ["run", "--directory", "/path/to/JNISleuth-MCP", "jnisleuth-mcp"],
       "env": {
-        "GHIDRA_INSTALL_DIR": "/opt/ghidra"
+        "GHIDRA_INSTALL_DIR": "/opt/ghidra",
+        "IDA_INSTALL_DIR": "/opt/idapro-9.0"
       }
     }
   }
 }
+```
+
+### Use with OpenAI / Gemini / Ollama Python SDKs Directly (No MCP Client Needed)
+```bash
+# Export function-calling tool schemas for OpenAI / Ollama / vLLM or Google Gemini:
+uv run jnisleuth llm-tools --format openai > openai_tools.json
+uv run jnisleuth llm-tools --format gemini > gemini_tools.json
 ```
 
 ---

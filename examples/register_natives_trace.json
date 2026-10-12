@@ -1,0 +1,40 @@
+{
+  "agent": "jnisleuth-dobby",
+  "device": "emulator-5554",
+  "package": "com.dropper",
+  "registrations": [
+    {
+      "class_name": "com.dropper.Core",
+      "method_name": "signC2Beacon",
+      "jni_signature": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+      "so_name": "libcore-crypto.so",
+      "so_path": "/data/app/com.dropper/lib/arm64/libcore-crypto.so",
+      "base_address": "0x7b44100000",
+      "fn_ptr": "0x7b44103f10",
+      "fn_offset": "0x003f10",
+      "resolution_mode": "Dynamic (Dobby)"
+    },
+    {
+      "class_name": "com.dropper.net.SocketBridge",
+      "method_name": "connectRaw",
+      "jni_signature": "(Ljava/lang/String;I)I",
+      "so_name": "libcore-crypto.so",
+      "so_path": "/data/app/com.dropper/lib/arm64/libcore-crypto.so",
+      "base_address": "0x7b44100000",
+      "fn_ptr": "0x7b44104890",
+      "fn_offset": "0x004890",
+      "resolution_mode": "Dynamic (Dobby)"
+    },
+    {
+      "class_name": "com.dropper.env.AntiAnalysis",
+      "method_name": "detectFridaMaps",
+      "jni_signature": "()Z",
+      "so_name": "libcore-crypto.so",
+      "so_path": "/data/app/com.dropper/lib/arm64/libcore-crypto.so",
+      "base_address": "0x7b44100000",
+      "fn_ptr": "0x7b44104b20",
+      "fn_offset": "0x004b20",
+      "resolution_mode": "Dynamic (Dobby)"
+    }
+  ]
+}

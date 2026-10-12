@@ -541,7 +541,26 @@ def build_stripped_arm64_so() -> tuple[bytes, list[dict[str, object]]]:
         ],
     )
 
-    # Function @ 0x005200: JNI_OnLoad constructing stack strings via MOVZ/MOVK and calling RegisterNatives (+0x6b8)
+    # Function @ 0x005200: JNI_OnLoad with OLLVM CSEL + BR X8 state machine, stack strings, and RegisterNatives (+0x6b8)
+    # Also write an OLLVM indirect jump table in .rodata @ 0x04DE00 pointing to state blocks
+    jt_rodata_va = 0x04DE00
+    struct.pack_into("<QQQ", image, jt_rodata_va, 0x005300, 0x005310, 0x005320)
+
+    def _arm64_adr(rd: int, pc: int, target_va: int) -> int:
+        diff = target_va - pc
+        immlo = diff & 0x3
+        immhi = (diff >> 2) & 0x7FFFF
+        return 0x10000000 | (immlo << 29) | (immhi << 5) | (rd & 0x1F)
+
+    def _arm64_cmp_w_reg(rn: int, rm: int) -> int:
+        return 0x6B00001F | ((rm & 0x1F) << 16) | ((rn & 0x1F) << 5)
+
+    def _arm64_csel64(rd: int, rn: int, rm: int, cond: int) -> int:
+        return 0x9A800000 | ((rm & 0x1F) << 16) | ((cond & 0xF) << 12) | ((rn & 0x1F) << 5) | (rd & 0x1F)
+
+    def _arm64_br(rn: int) -> int:
+        return 0xD61F0000 | ((rn & 0x1F) << 5)
+
     onload_insns = [
         _arm64_mov_reg(19, 0),
         _arm64_ldr_uimm64(8, 19, 0),
@@ -550,14 +569,45 @@ def build_stripped_arm64_so() -> tuple[bytes, list[dict[str, object]]]:
     ]
     onload_insns.extend(_encode_stack_string_arm64("signC2Beacon", 0x20))
     onload_insns.extend(_encode_stack_string_arm64("connectRaw", 0x40))
+
+    # OLLVM State Machine Dispatcher #1 (CSEL + BR X8):
+    # Compare state register W20 against state constant 0x13370001 (in W21)
+    disp1_pc = 0x005200 + len(onload_insns) * 4
+    true_block_va = disp1_pc + 36  # immediately after BR X8
+    false_block_va = 0x005330
     onload_insns.extend(
         [
-            _arm64_ldr_uimm64(9, 8, 0x6B8),  # RegisterNatives (+0x6b8)
+            _arm64_movz(20, 0x0001, 0),
+            _arm64_movk(20, 0x1337, 16),
+            _arm64_movz(21, 0x0001, 0),
+            _arm64_movk(21, 0x1337, 16),
+            _arm64_cmp_w_reg(20, 21),  # cmp w20, w21 (state 0x13370001)
+            _arm64_adr(11, disp1_pc + 20, true_block_va),
+            _arm64_adr(12, disp1_pc + 24, false_block_va),
+            _arm64_csel64(8, 11, 12, 0x0),  # csel x8, x11, x12, eq
+            _arm64_br(8),  # br x8 (OLLVM indirect branch #1)
+            # State block 0x13370001: invokes RegisterNatives (+0x6b8)
+            _arm64_ldr_uimm64(9, 8, 0x6B8),
             _arm64_blr(9),
+        ]
+    )
+
+    # OLLVM Indirect Jump-Table Dispatch #2 (ADRP + ADD + LDR X8, [X13] + BR X8):
+    disp2_pc = 0x005200 + len(onload_insns) * 4
+    onload_insns.extend(
+        [
+            _arm64_adrp(13, disp2_pc, jt_rodata_va),
+            _arm64_add_imm(13, 13, jt_rodata_va & 0xFFF),
+            _arm64_ldr_uimm64(8, 13, 0),  # ldr x8, [x13] (loads from .rodata jump table)
+            _arm64_br(8),  # br x8 (OLLVM indirect branch #2)
             ARM64_RET,
         ]
     )
     write_insns(0x005200, onload_insns)
+    write_insns(0x005300, [ARM64_RET])
+    write_insns(0x005310, [ARM64_RET])
+    write_insns(0x005320, [ARM64_RET])
+    write_insns(0x005330, [ARM64_RET])
 
     # 3. Write ELF64 Header, Program Headers, and Section Headers
     shstrtab = b"\x00.text\x00.rodata\x00.data.rel.ro\x00.dynsym\x00.dynstr\x00.shstrtab\x00"

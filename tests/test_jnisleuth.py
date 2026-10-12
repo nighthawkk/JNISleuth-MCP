@@ -514,6 +514,144 @@ class TestJNISleuthMCP(unittest.TestCase):
             self.assertEqual(len(unpacked_methods), 1)
             self.assertEqual(unpacked_methods[0].qualified_name, "com.dropper.Unpacked#hiddenNative")
 
+    def test_ollvm_indirect_branch_resolver_and_patcher(self) -> None:
+        from jnisleuth.mcp_server import resolve_ollvm_indirect_branches
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            patched_so = Path(tmpdir) / "libcore-crypto.deobf.so"
+            res = resolve_ollvm_indirect_branches(
+                str(self.so_path),
+                fn_offset="0x5200",
+                patch_output_path=str(patched_so),
+            )
+            self.assertEqual(res["indirect_branch_count"], 2)
+            b0 = res["indirect_branches"][0]
+            self.assertEqual(b0["pattern_type"], "OLLVM CSEL Flattened Dispatcher")
+            self.assertEqual(b0["condition"], "EQ")
+            self.assertEqual(b0["state_register"], "W20")
+            self.assertEqual(b0["compared_state_id"], "0x13370001")
+            self.assertEqual(len(b0["target_vas"]), 2)
+
+            b1 = res["indirect_branches"][1]
+            self.assertEqual(b1["pattern_type"], "OLLVM Indirect Jump-Table Dispatch")
+            self.assertEqual(b1["target_vas"], ["0x005300", "0x005310", "0x005320"])
+
+            self.assertEqual(len(res["state_transitions"]), 1)
+            st0 = res["state_transitions"][0]
+            self.assertEqual(st0["state_id"], "0x13370001")
+            self.assertTrue(st0["calls_register_natives"])
+
+            # Verify binary ELF patching replaced CSEL + BR X8 with B.EQ + B
+            self.assertTrue(patched_so.exists())
+            self.assertEqual(res["patched_branch_count"], 2)
+            patched_elf = ElfBinary.from_file(patched_so)
+            csel_off = int(b0["csel_va"], 16)
+            br_off = int(b0["site_offset"], 16)
+            word_bcond = struct.unpack_from("<I", patched_elf.data, csel_off)[0]
+            word_b = struct.unpack_from("<I", patched_elf.data, br_off)[0]
+            self.assertEqual(word_bcond & 0xFF000000, 0x54000000)
+            self.assertEqual(word_b & 0xFC000000, 0x14000000)
+
+            # Re-running OLLVM scanner on the patched ELF should find 0 indirect branches
+            res_after = resolve_ollvm_indirect_branches(str(patched_so), fn_offset="0x5200")
+            self.assertEqual(res_after["indirect_branch_count"], 0)
+
+    def test_ida_pro_9_backend_and_header_generation(self) -> None:
+        import types
+        from unittest import mock
+        from jnisleuth.ida_bridge import (
+            detect_ida9_environment,
+            generate_ida_jni_c_header,
+            sync_ida_jni_types,
+        )
+        from jnisleuth.mcp_server import resolve_ollvm_indirect_branches
+
+        c_hdr = generate_ida_jni_c_header()
+        self.assertIn("struct JNINativeInterface_ {", c_hdr)
+        self.assertIn("(*GetStringUTFChars)", c_hdr)
+        self.assertIn("(*RegisterNatives)", c_hdr)
+        self.assertIn("typedef const struct JNINativeInterface_ *JNIEnv;", c_hdr)
+
+        env_info = detect_ida9_environment()
+        self.assertIn("preferred_backend", env_info)
+
+        ollvm_res = resolve_ollvm_indirect_branches(str(self.so_path), fn_offset="0x5200")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_p = Path(tmpdir)
+            manifest_out = tmp_p / "ida_manifest.json"
+            hdr_out = tmp_p / "jnisleuth_jni.h"
+
+            ida_res = sync_ida_jni_types(
+                str(self.trace_path),
+                database_name="test_dropper.i64",
+                output_manifest_path=manifest_out,
+                output_header_path=hdr_out,
+                ollvm_branches=ollvm_res["indirect_branches"],
+            )
+            self.assertEqual(ida_res["status"], "synced")
+            self.assertEqual(ida_res["jni_vtable_slots_applied"], 233)
+            self.assertEqual(ida_res["synced_function_count"], 3)
+            self.assertEqual(ida_res["ollvm_indirect_branch_count"], 2)
+            self.assertTrue(manifest_out.exists())
+            self.assertTrue(hdr_out.exists())
+
+            # Test IDAPython 9.0 script `apply_manifest_in_ida` using mocked IDA 9.0 modules
+            ida_scripts_dir = REPO_ROOT / "ida_scripts"
+            if str(ida_scripts_dir) not in sys.path:
+                sys.path.insert(0, str(ida_scripts_dir))
+            import ResolveJNIBridge_IDA  # type: ignore
+
+            mock_xrefs: list[tuple[int, int, int]] = []
+            mock_names: dict[int, str] = {}
+            mock_types: dict[int, str] = {}
+
+            fake_ida_auto = types.SimpleNamespace(auto_wait=lambda: None)
+            fake_ida_bytes = types.SimpleNamespace(set_cmt=lambda ea, cmt, rpt: True)
+            fake_ida_funcs = types.SimpleNamespace(
+                get_func=lambda ea: None, add_func=lambda ea: True
+            )
+            fake_ida_hexrays = types.SimpleNamespace(
+                init_hexrays_plugin=lambda: True,
+                decompile=lambda ea: f"/* Hex-Rays decompiled @ 0x{ea:x} */",
+            )
+            fake_ida_nalt = types.SimpleNamespace(get_imagebase=lambda: 0x0)
+            fake_ida_name = types.SimpleNamespace(
+                SN_NOWARN=1,
+                SN_FORCE=2,
+                set_name=lambda ea, name, flags: (mock_names.update({ea: name}) or True),
+            )
+            fake_ida_typeinf = types.SimpleNamespace(idc_parse_types=lambda hdr, flags: 0)
+            fake_ida_xref = types.SimpleNamespace(
+                fl_JN=19,
+                XREF_USER=32,
+                add_cref=lambda frm, to, flags: mock_xrefs.append((frm, to, flags)),
+            )
+            fake_idc = types.SimpleNamespace(
+                SetType=lambda ea, decl: (mock_types.update({ea: decl}) or True)
+            )
+
+            manifest_data = json.loads(manifest_out.read_text(encoding="utf-8"))
+            with mock.patch.dict(
+                sys.modules,
+                {
+                    "ida_auto": fake_ida_auto,
+                    "ida_bytes": fake_ida_bytes,
+                    "ida_funcs": fake_ida_funcs,
+                    "ida_hexrays": fake_ida_hexrays,
+                    "ida_nalt": fake_ida_nalt,
+                    "ida_name": fake_ida_name,
+                    "ida_typeinf": fake_ida_typeinf,
+                    "ida_xref": fake_ida_xref,
+                    "idc": fake_idc,
+                },
+            ):
+                applied = ResolveJNIBridge_IDA.apply_manifest_in_ida(manifest_data)
+                self.assertEqual(applied["parsed_type_errors"], 0)
+                self.assertEqual(applied["renamed_count"], 3)
+                self.assertEqual(applied["typed_count"], 3)
+                self.assertEqual(applied["ollvm_xrefs_added"], 5)
+                self.assertEqual(len(mock_xrefs), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

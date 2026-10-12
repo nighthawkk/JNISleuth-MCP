@@ -140,6 +140,8 @@ Connect `JNISleuth-MCP` to **Claude Desktop**, **Cursor**, **Gemini CLI**, or **
 | `get_cross_boundary_slice(java_method)` | Returns the decompiled Java caller (via Jadx) **and** the typed, decompiled C/ARM64 implementation (via Ghidra) in a single unified response. |
 | `trace_jni_upcalls(so_name, fn_offset)` | Lists every Java reflection callback (`FindClass`, `GetMethodID`, `CallObjectMethod`, `SetByteArrayRegion`) invoked inside a native ARM64 function and its callees. |
 | `sync_ghidra_jni_types(trace_json)` | Applies `JNIEnv*`, `JavaVM*`, `JNINativeMethod` structs, and recovered function signatures directly into an active or headless Ghidra project. |
+| `sync_ida_jni_types(trace_json)` | Applies `JNIEnv*`, `JavaVM*`, `JNINativeMethod` C headers, recovered function prototypes, and OLLVM `fl_JN` code cross-references into IDA Pro 9.0 (`idalib` / `idapyswitch` / `idat64`). |
+| `resolve_ollvm_indirect_branches(so_name, fn_offset)` | Resolves OLLVM `CSEL` + `BR X8` state-machine dispatchers and `.rodata` jump tables in `JNI_OnLoad`, and optionally patches the ELF binary with direct `B.<cond>` / `B` instructions. |
 | `extract_jni_onload_strings(so_name)` | Dumps stack-constructed and XOR-decrypted strings inside `.init_array` and `JNI_OnLoad`. |
 
 ---
@@ -158,7 +160,7 @@ Many wild Android malware families and commercial protectors immediately crash o
 
 ### Prerequisites
 * Python 3.10+ (`pip install uv`)
-* Ghidra 11.0+ (`GHIDRA_INSTALL_DIR` set in environment)
+* Ghidra 11.0+ (`GHIDRA_INSTALL_DIR`) or IDA Pro 9.0+ (`IDA_INSTALL_DIR` / `idapyswitch`)
 * Jadx CLI installed in `$PATH`
 * *(Optional)* Android NDK r26+ & ADB for dynamic Dobby collection
 
@@ -168,8 +170,11 @@ git clone https://github.com/<your-username>/JNISleuth-MCP.git
 cd JNISleuth-MCP
 uv sync
 
-# Run against the included obfuscated NDK crackme sample:
-uv run jnisleuth scan --apk examples/obfuscated_jni_sample.apk --ghidra-headless
+# 1. Scan the included obfuscated NDK crackme sample & sync with Ghidra / IDA Pro 9.0:
+uv run jnisleuth scan --apk examples/obfuscated_jni_sample.apk --ghidra-headless --ida-headless
+
+# 2. Resolve & patch OLLVM CSEL + BR X8 indirect branches in JNI_OnLoad:
+uv run jnisleuth deobfuscate --so examples/libcore-crypto.so --offset 0x5200 --patch-out examples/libcore-crypto.deobf.so
 ```
 
 ### Add to Claude Desktop / Cursor (`mcp.json`)
@@ -193,10 +198,10 @@ uv run jnisleuth scan --apk examples/obfuscated_jni_sample.apk --ghidra-headless
 
 - [x] Static DEX `native` method parser + ELF `.rodata` / `.data.rel.ro` `JNINativeMethod` triplet scanner
 - [x] Headless Ghidra `JNIEnv*` vtable auto-typing script for ARM64 & x86_64
-- [x] Unified FastMCP server bridging Jadx & Ghidra
+- [x] Unified FastMCP server bridging Jadx, Ghidra & IDA Pro 9.0
 - [x] On-device Dobby mid-function `RegisterNatives` + `DexFile::OpenCommon` unpacker module
-- [ ] IDA Pro 9.0 (idapyswitch / headless) backend support alongside Ghidra
-- [ ] Automated OLLVM indirect-branch (`BR X8`) resolver for `JNI_OnLoad` state machines
+- [x] IDA Pro 9.0 (`idapyswitch` / `idalib` / headless `idat64`) backend support alongside Ghidra
+- [x] Automated OLLVM indirect-branch (`BR X8`) resolver & ELF patcher for `JNI_OnLoad` state machines
 
 ---
 

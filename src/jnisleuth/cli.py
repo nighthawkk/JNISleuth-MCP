@@ -9,13 +9,16 @@ import sys
 from typing import Sequence
 
 from .ghidra_bridge import sync_ghidra_jni_types
+from .ida_bridge import sync_ida_jni_types
 from .mcp_server import (
     extract_jni_onload_strings,
     get_cross_boundary_slice,
     mcp,
+    resolve_ollvm_indirect_branches,
     trace_jni_upcalls,
 )
 from .models import ResolvedJNIBinding
+from .ollvm_resolver import resolve_ollvm_indirect_branches as _resolve_ollvm_raw
 from .sample_generator import generate_all_samples
 from .static_heuristic import analyze_apk_bundle
 
@@ -82,12 +85,25 @@ def cmd_scan(args: argparse.Namespace) -> int:
     bindings: list[ResolvedJNIBinding] = report["bindings"]
     elfs = report["elf_binaries"]
     classes_count = len({m.class_name for m in dex_methods})
-    project_name = f"{Path(args.apk).stem}.gpr"
+    stem = Path(args.apk).stem
+    project_name = f"{stem}.gpr"
+    ida_db_name = f"{stem}.i64"
+
+    ollvm_branches: list[dict[str, object]] = []
+    for elf in elfs:
+        ollvm_res = _resolve_ollvm_raw(elf, fn_offset=0x005200)
+        ollvm_branches.extend(ollvm_res["indirect_branches"])
 
     sync_res = sync_ghidra_jni_types(
         bindings,
         project_name=project_name,
         run_headless=bool(args.ghidra_headless),
+    )
+    ida_sync_res = sync_ida_jni_types(
+        bindings,
+        database_name=ida_db_name,
+        ollvm_branches=ollvm_branches,  # type: ignore[arg-type]
+        run_headless=bool(getattr(args, "ida_headless", False)),
     )
 
     if args.json:
@@ -100,8 +116,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
             "static_resolved_count": report["static_resolved_count"],
             "dynamic_resolved_count": report["dynamic_resolved_count"],
             "table_offsets": [f"0x{off:08x}" for off in report["table_offsets"]],
+            "ollvm_indirect_branches": ollvm_branches,
             "bindings": [b.to_dict() for b in bindings],
             "ghidra_sync": sync_res,
+            "ida_sync": ida_sync_res,
         }
         print(json.dumps(out, indent=2))
         return 0
@@ -125,6 +143,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
         f"    [+] Resolved {report['static_resolved_count']}/{len(dex_methods)} methods "
         f"via static struct table @ {table_off_str}"
     )
+    if ollvm_branches:
+        print(
+            f"    [+] Resolved {len(ollvm_branches)} OLLVM indirect branches (BR X8) in JNI_OnLoad"
+        )
     if report["unresolved_static_count"] > 0:
         print(
             f"[!] {report['unresolved_static_count']} methods unresolved "
@@ -136,7 +158,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     print(format_unicode_bindings_table(bindings))
     print(
         f"[+] Synced {len(bindings)} function signatures and JNIEnv* types "
-        f"to Ghidra project: {project_name}"
+        f"to Ghidra ({project_name}) & IDA Pro 9.0 ({ida_db_name})"
     )
     return 0
 
@@ -171,10 +193,31 @@ def cmd_strings(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_deobfuscate(args: argparse.Namespace) -> int:
+    res = resolve_ollvm_indirect_branches(
+        so_name=args.so,
+        fn_offset=args.offset,
+        apk_path=args.apk or "",
+        patch_output_path=args.patch_out or "",
+    )
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_ida_sync(args: argparse.Namespace) -> int:
+    res = sync_ida_jni_types(
+        trace_json=args.trace,
+        database_name=args.database,
+        output_header_path=args.output_header or None,
+    )
+    print(json.dumps(res, indent=2))
+    return 0
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jnisleuth",
-        description="JNISleuth-MCP: Automated RegisterNatives Recovery & Unified Jadx+Ghidra MCP Server",
+        description="JNISleuth-MCP: Automated RegisterNatives Recovery & Unified Jadx+Ghidra/IDA MCP Server",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -186,6 +229,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--ghidra-headless",
         action="store_true",
         help="Synchronize recovered types and signatures with headless Ghidra",
+    )
+    p_scan.add_argument(
+        "--ida-headless",
+        action="store_true",
+        help="Synchronize recovered types, signatures, and OLLVM xrefs with headless IDA Pro 9.0",
     )
     p_scan.add_argument("--json", action="store_true", help="Emit JSON output")
 
@@ -205,6 +253,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_strings.add_argument("--so", required=True, help="Path or name of .so library")
     p_strings.add_argument("--apk", default="", help="Optional APK path")
 
+    p_deobf = sub.add_parser(
+        "deobfuscate",
+        help="Resolve and optionally patch OLLVM indirect branches (BR X8 / CSEL) in JNI_OnLoad",
+    )
+    p_deobf.add_argument("--so", required=True, help="Path or name of .so library")
+    p_deobf.add_argument("--offset", default="0x5200", help="Function offset (default: 0x5200)")
+    p_deobf.add_argument("--apk", default="", help="Optional APK path")
+    p_deobf.add_argument("--patch-out", default="", help="Optional output path for patched ELF .so")
+
+    p_ida = sub.add_parser(
+        "ida-sync",
+        help="Export JNIEnv* C header and function manifest for IDA Pro 9.0 (idapyswitch / idalib / idat64)",
+    )
+    p_ida.add_argument("--trace", required=True, help="Path to register_natives.json trace")
+    p_ida.add_argument("--database", default="banker_dropper.i64", help="Target IDA .i64 database name")
+    p_ida.add_argument("--output-header", default="", help="Optional path to write jni_types.h")
+
     sub.add_parser("generate-samples", help="Generate synthetic APK, ELF .so, and Dobby trace samples")
     sub.add_parser("mcp", help="Start the JNISleuth FastMCP stdio server")
 
@@ -223,6 +288,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_upcalls(args)
     if args.command == "strings":
         return cmd_strings(args)
+    if args.command == "deobfuscate":
+        return cmd_deobfuscate(args)
+    if args.command == "ida-sync":
+        return cmd_ida_sync(args)
     if args.command == "generate-samples":
         paths = generate_all_samples()
         print(json.dumps(paths, indent=2))

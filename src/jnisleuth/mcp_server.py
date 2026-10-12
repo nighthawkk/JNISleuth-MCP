@@ -12,7 +12,12 @@ import zipfile
 from .dex_parser import parse_dex_Or_apk, synthesize_java_caller_view
 from .elf_scanner import ElfBinary
 from .ghidra_bridge import sync_ghidra_jni_types as _sync_ghidra_jni_types
+from .ida_bridge import sync_ida_jni_types as _sync_ida_jni_types
 from .models import CrossBoundarySlice
+from .ollvm_resolver import (
+    patch_ollvm_indirect_branches as _patch_ollvm_indirect_branches,
+    resolve_ollvm_indirect_branches as _resolve_ollvm_indirect_branches,
+)
 from .static_heuristic import (
     analyze_apk_bundle,
     extract_jni_onload_strings as _extract_jni_onload_strings,
@@ -83,7 +88,7 @@ except ImportError:
                     "result": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {"tools": {"listChanged": False}},
-                        "serverInfo": {"name": self.name, "version": "0.1.0"},
+                        "serverInfo": {"name": self.name, "version": "0.2.0"},
                     },
                 }
 
@@ -231,7 +236,7 @@ def get_cross_boundary_slice(
     java_method: str,
     apk_path: str = "",
 ) -> dict[str, Any]:
-    """Returns the decompiled Java caller (via Jadx) and the typed, decompiled C/ARM64 implementation (via Ghidra) in a single unified response."""
+    """Returns the decompiled Java caller (via Jadx) and the typed, decompiled C/ARM64 implementation (via Ghidra/IDA) in a single unified response."""
     target_apk = _find_default_apk(apk_path)
     report = analyze_apk_bundle(target_apk)
     dex_methods = report["dex_methods"]
@@ -305,6 +310,36 @@ def sync_ghidra_jni_types(
 ) -> dict[str, Any]:
     """Applies `JNIEnv*`, `JavaVM*`, `JNINativeMethod` structs, and recovered function signatures directly into an active or headless Ghidra project."""
     return _sync_ghidra_jni_types(trace_json=trace_json, project_name=project_name)
+
+
+@mcp.tool()
+def sync_ida_jni_types(
+    trace_json: str,
+    database_name: str = "banker_dropper.i64",
+) -> dict[str, Any]:
+    """Applies `JNIEnv*`, `JavaVM*`, `JNINativeMethod` structs, and recovered function signatures into IDA Pro 9.0 (`idalib` / `idapyswitch` / `idat64`)."""
+    return _sync_ida_jni_types(trace_json=trace_json, database_name=database_name)
+
+
+@mcp.tool()
+def resolve_ollvm_indirect_branches(
+    so_name: str,
+    fn_offset: str | int = "0x5200",
+    apk_path: str = "",
+    patch_output_path: str = "",
+) -> dict[str, Any]:
+    """Resolves OLLVM `CSEL` + `BR X8` state-machine dispatchers and `.rodata` jump tables in `JNI_OnLoad`, optionally patching the ELF binary."""
+    elf = _load_elf_by_name(so_name, apk_path=apk_path)
+    offset_int = int(fn_offset, 16) if isinstance(fn_offset, str) else int(fn_offset)
+    res = _resolve_ollvm_indirect_branches(elf, fn_offset=offset_int)
+    if patch_output_path:
+        patch_res = _patch_ollvm_indirect_branches(
+            elf, fn_offset=offset_int, output_so_path=patch_output_path
+        )
+        res["patched_branch_count"] = patch_res["patched_branch_count"]
+        res["patched_sites"] = patch_res["patched_sites"]
+        res["output_so_path"] = patch_res["output_so_path"]
+    return res
 
 
 @mcp.tool()
